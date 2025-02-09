@@ -28,7 +28,8 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
-result
+result/
+wandb/
 config.yaml
 
 # PyInstaller

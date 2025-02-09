@@ -118,6 +118,14 @@ You need to add API_URL in .env file.
 API_URL=https://finest-data-api.elevonix.io/api
 ```
 
+### Adding WANDB_API_KEY
+
+You need to add WANDB_API_KEY in .env file.
+
+```bash
+WANDB_API_KEY=YOUR_WANDB_API_KEY
+```
+
 ### Installing Dependencies
 
 Ensure you have the required dependencies installed. You can use the following command to install them:

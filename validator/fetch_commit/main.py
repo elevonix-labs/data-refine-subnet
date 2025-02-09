@@ -55,7 +55,7 @@ logger.handlers[0] = (
 )
 
 
-previous_commits = defaultdict(dict)
+# previous_commits = defaultdict(dict)
 
 
 def fetch_commits(config: bt.config, redis_queue: redis.Redis):
@@ -94,61 +94,62 @@ def fetch_commits(config: bt.config, redis_queue: redis.Redis):
         logging.info("Initiating the commit fetching process...")
 
         while True:
+
             logging.info("Fetching commits...")
             for uid in metagraph.uids:
                 try:
-                    # Fetch the current commit
                     current_commit = subtensor.get_commitment(
                         netuid=config.netuid, uid=uid
                     )
-                    # Check if commit has changed
-                    if current_commit and current_commit != (
-                        previous_commits.get(uid)[0]
-                        if previous_commits.get(uid)
-                        else None
-                    ):
+
+                    if current_commit:
                         hotkey = metagraph.hotkeys[uid]
                         metadata = cast(
                             dict[str, Any],
                             get_metadata(subtensor, metagraph.netuid, hotkey),
                         )
+
                         commit_block = metadata["block"]
-                        data = {
-                            "uid": int(uid),
-                            "current_commit": current_commit,
-                            "commit_block": commit_block,
-                        }
-                        redis_queue.rpush("commit_queue", json.dumps(data))
-                        logging.info(f"Pushed commit data to Redis: {data}")
-                        previous_commits[uid] = (current_commit, commit_block)
-                    # If commit is not changed in one day, giving punishment
-                    elif (
-                        current_commit
-                        and (
+                        current_block = subtensor.get_current_block()
+
+                        previous_commit_data = redis_queue.hget("previous_commits", int(uid))
+                        previous_commit = json.loads(previous_commit_data) if previous_commit_data else (None, None)
+
+                        if (current_block - commit_block) < 7200 and current_commit != previous_commit[0]:
+                            data = {
+                                "uid": int(uid),
+                                "current_commit": current_commit,
+                                "commit_block": commit_block,
+                            }
+                            redis_queue.rpush("commit_queue", json.dumps(data))
+                            logging.info(f"Pushed commit data to Redis: {data}")
+                            redis_queue.hset("previous_commits", int(uid), json.dumps((current_commit, commit_block)))
+                        # If commit is not changed in one day, giving punishment
+                        elif (
                             subtensor.get_current_block()
                             - (
-                                previous_commits.get(uid)[1]
-                                if previous_commits.get(uid)
-                                else None
+                                previous_commit[1]
+                                if previous_commit[1] is not None
+                                else 0
                             )
-                        )
-                        > 7200
-                    ):
-                        logging.warning(
-                            f"Commit for UID {uid} has not changed in over a day, updating score."
-                        )
-                        previous_commits[uid] = (
-                            current_commit,
-                            subtensor.get_current_block(),
-                        )
-                        raw_score = redis_queue.hget("scores", int(uid))
-                        current_score = json.loads(raw_score) if raw_score else 0
-                        updated_score = current_score * 0.8
-                        redis_queue.hset("scores", int(uid), json.dumps(updated_score))
+                        ) > 7200:
+                            logging.warning(
+                                f"Commit for UID {uid} has not changed in over a day, updating score."
+                            )
+                            redis_queue.hset("previous_commits", int(uid), json.dumps((current_commit, subtensor.get_current_block())))
+
+                            raw_score = redis_queue.hget("scores", int(uid))
+                            current_score = json.loads(raw_score) if raw_score else 0
+                            updated_score = current_score * 0.8
+                            redis_queue.hset(
+                                "scores", int(uid), json.dumps(updated_score)
+                            )
+                        else:
+                            logging.warning(
+                                f"Commit for UID {uid} is unchanged for a day, skipping."
+                            )
                     else:
-                        logging.warning(
-                            f"No new commit for UID {uid} or commit unchanged for a day, skipping."
-                        )
+                        logging.warning(f"No commit for UID {uid} ")
                         continue
                 except Exception as e:
                     logging.error(
@@ -158,7 +159,7 @@ def fetch_commits(config: bt.config, redis_queue: redis.Redis):
 
             # Sleep for the interval defined in config
             logging.info("Pausing for 5 minutes before the next commit fetch cycle.")
-            time.sleep(5 * 60)
+            time.sleep(5 * 1)
 
     except Exception as e:
         logging.error(
@@ -178,7 +179,7 @@ def main():
         fetch_commits(config, redis_queue)
 
     except KeyboardInterrupt:
-        print("🔴 Fetch-commit Process interrupted by user")
+        logger.error("🔴 Fetch-commit Process interrupted by user")
 
 
 if __name__ == "__main__":

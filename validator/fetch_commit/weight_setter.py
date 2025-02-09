@@ -3,10 +3,11 @@ import numpy as np
 import utils
 import redis
 import sys
+import os
 import time
 from utils import process_weights_for_netuid, convert_weights_and_uids_for_emit
 import logging
-
+from wandb_logger import WandbLogger
 # Set up logging
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -64,41 +65,65 @@ def set_weights(
 
         if result:
             logging.info("🚀 set_weights on chain successfully!")
+            return True
         else:
             logging.error(f"set_weights failed: {msg}")
+            return False
 
     except Exception as e:
         logging.error(f"An error occurred during weight setting: {e}", exc_info=True)
+        return False
 
 
 def main(config: bt.config, subtensor: bt.subtensor):
     """Main loop to periodically set weights."""
+    try:
+        wandb_api_key = os.getenv("WANDB_API_KEY")
+        if wandb_api_key is None:
+            logging.error("🔴 WANDB_API_KEY is not set")
+            sys.exit(1)
+    except Exception as e:
+        logging.error(f"🔴 An error occurred while logging in to Wandb: {e}", exc_info=True)
+        sys.exit(1)
+
+    wandb_logger = WandbLogger()
+    redis_queue = redis.Redis(host="localhost", port=6379, db=0)
+
+    saved_scores = wandb_logger.get_all_scores()
+
+    if saved_scores:
+        logging.info("Successfully fetched scores from Wandb.")
+        redis_queue.hset('scores', mapping=saved_scores)
 
     logging.info("Started main loop to periodically set weights.")
-
     try:
         while True:
             try:
                 if subtensor.get_current_block() % 100 == 0:
                     metagraph: bt.metagraph = subtensor.metagraph(config.netuid)
-                    redis_queue = redis.Redis(host="localhost", port=6379, db=0)
                     raw_scores = redis_queue.hgetall("scores")
+
                     scores = [
-                        float(raw_scores.get(bytes(str(uid), "utf-8"), b"0"))
+                        float(raw_scores.get(str(uid).encode('utf-8'), b"0").decode('utf-8'))
                         for uid in metagraph.uids
                     ]
 
                     logging.info(f"Setting weights for {len(scores)} UIDs...")
-                    set_weights(scores, config, metagraph, subtensor)
+                    is_set = set_weights(scores, config, metagraph, subtensor)
+
+                    if is_set:
+                        for i, value in enumerate(scores):
+                            wandb_logger.log_wandb({"uid": i, "score": value})
+
                     logging.info("Waiting for next cycle...")
                     time.sleep(10)
 
             except Exception as e:
                 logging.error(f"An error occurred in the main loop: {e}", exc_info=True)
+                sys.exit(1)
 
     except KeyboardInterrupt:
         print("🔴 Weight-setter Process interrupted by user.")
-
     except Exception as e:
         print(f"{e}")
         sys.exit(1)
